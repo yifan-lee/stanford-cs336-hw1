@@ -86,3 +86,4 @@ def test_train_bpe_special_tokens(snapshot):
             "merges": merges,
         },
     )
+

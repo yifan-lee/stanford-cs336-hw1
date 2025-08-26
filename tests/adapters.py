@@ -9,6 +9,8 @@ import numpy.typing as npt
 import torch
 from torch import Tensor
 
+from Uat import train_bpe
+
 
 def run_linear(
     d_in: int,
@@ -589,4 +591,5 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    vocab, merges = train_bpe(str(input_path), vocab_size, special_tokens)
+    return vocab, merges
