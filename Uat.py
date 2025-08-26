@@ -1,6 +1,7 @@
 from collections import defaultdict
 import regex as re
 
+
 def load_txt_as_str(input_path: str) -> str:
     with open(input_path, "r", encoding="utf-8") as f:
         text = f.read()
@@ -27,7 +28,7 @@ def get_byte_counts(counts: dict[str, int])-> dict[str, int]:
         element_counts[elements] += count
     return element_counts
 
-def get_pair_counts(element_counts: dict[str, int]) -> dict[tuple[str,str], int]:
+def get_pair_counts(element_counts: dict[str, int]) -> dict[tuple[int,int], int]:
     pair_counts = defaultdict(int)
     for elements, count in element_counts.items():
         for i in range(len(elements)-1):
@@ -35,7 +36,7 @@ def get_pair_counts(element_counts: dict[str, int]) -> dict[tuple[str,str], int]
     return pair_counts
 
 
-def update_element_counts(byte_level_counts: dict[str, int], pair: tuple[str, str], new_index: int) -> dict[str, int]:
+def update_element_counts(byte_level_counts: dict[str, int], pair: tuple[int, int], new_index: int) -> dict[str, int]:
     new_byte_level_counts = {}
     for elements, counts in byte_level_counts.items():
         new_element = []
@@ -57,6 +58,15 @@ def initiate_vocab(special_tokens: list[str]) ->  dict[int, bytes]:
         vocab[i] = tok.encode("utf-8")
     return vocab   
 
+def find_max_pair(pair_counts: dict[tuple[int,int], int], vocab:dict[int, bytes]) -> tuple[int, int]:
+    max_count = max(pair_counts.values())
+    candidate_pairs = [key for key, value in pair_counts.items() if value == max_count]
+    def sort_pair(pair):
+        index1, index2 = pair
+        return(vocab[index1], vocab[index2])
+    pair = max(candidate_pairs, key = sort_pair)
+    return pair
+
 
 def pre_tokenize(string: str,vocab_size: int,special_tokens: list[str]) -> tuple[dict[int, bytes],list[tuple[bytes, bytes]]]:
     merges = []
@@ -70,7 +80,7 @@ def pre_tokenize(string: str,vocab_size: int,special_tokens: list[str]) -> tuple
         pair_counts = get_pair_counts(byte_level_counts)
         if len(pair_counts) == 0:
             break
-        pair = max(pair_counts, key=lambda k: (pair_counts[k], k))
+        pair = find_max_pair(pair_counts, vocab)
         index1, index2 = pair
         new_token = vocab[int(index1)]+vocab[int(index2)]
         new_index = vocab_len
