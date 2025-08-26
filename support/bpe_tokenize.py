@@ -161,8 +161,8 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
         print(f"{name:<20} ⏱️ {t:.2f}s | 📦 {mem:.2f}MB")
         
     print(f"\n✅ 总运行时间: {total_end_time - total_start_time:.2f}s")
-    print(f"📦 当前内存使用: {current / 1024 / 1024:.2f} MB")
-    print(f"📦 峰值内存使用: {peak / 1024 / 1024:.2f} MB")
+    print(f"📦 当前内存使用: {current / 1024 / 1024 / 1024:.2f} GB")
+    print(f"📦 峰值内存使用: {peak / 1024 / 1024 / 1024:.2f} GB")
 
 
     return vocab, merges
@@ -179,9 +179,9 @@ def timed(name, snapshot_list):
             t1 = time.perf_counter()
             snapshot_after = tracemalloc.take_snapshot()
             stats = snapshot_after.compare_to(snapshot_before, 'lineno')
-            total_mem = sum(stat.size_diff for stat in stats) / 1024 / 1024
+            total_mem = sum(stat.size_diff for stat in stats) / 1024 / 1024 / 1024
 
-            print(f"{name} ⏱️耗时: {t1 - t0:.2f}s | 📦内存增长: {total_mem:.2f}MB")
+            print(f"{name} ⏱️耗时: {t1 - t0:.2f}s | 📦内存增长: {total_mem:.2f}GB")
             snapshot_list.append((name, t1 - t0, total_mem))
             return result
         return inner
