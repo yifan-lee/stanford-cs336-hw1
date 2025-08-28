@@ -6,17 +6,17 @@ from support.find_chunk_boundaries import find_chunk_boundaries
 import time, tracemalloc
 
 
-def load_txt_as_str(input_path: str) -> str:
+def read_text_file(input_path: str) -> str:
     with open(input_path, "r", encoding="utf-8") as f:
         text = f.read()
     return text
 
-def split_string(string: str, special_tokens: list[str]) -> list[str]:
+def split_by_special_tokens(string: str, special_tokens: list[str]) -> list[str]:
     pattern = "|".join(re.escape(tok) for tok in special_tokens)
     return re.split(pattern,string)
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-def get_tok_counts(string_list: list[str]) -> dict[str, int]:
+def count_tokens(string_list: list[str]) -> dict[str, int]:
     counts = defaultdict(int)
     for s in string_list:
         tokens = re.finditer(PAT, s)
@@ -25,24 +25,24 @@ def get_tok_counts(string_list: list[str]) -> dict[str, int]:
             counts[tok] += 1
     return counts
 
-def get_byte_counts(counts: dict[str, int])-> dict[str, int]:
+def encode_and_count_tokens(counts: dict[str, int])-> dict[str, int]:
     element_counts = defaultdict(int)
     for token, count in counts.items():
         elements = tuple(token.encode("utf-8"))
         element_counts[elements] += count
     return element_counts
 
-def get_pair_counts(element_counts: dict[str, int]) -> dict[tuple[int,int], int]:
-    pair_counts = defaultdict(int)
+def count_byte_pairs(element_counts: dict[str, int]) -> dict[tuple[int,int], int]:
+    pair_freqs = defaultdict(int)
     for elements, count in element_counts.items():
         for i in range(len(elements)-1):
-            pair_counts[(elements[i],elements[i+1])] += count
-    return pair_counts
+            pair_freqs[(elements[i],elements[i+1])] += count
+    return pair_freqs
 
 
-def update_element_counts(byte_level_counts: dict[str, int], pair: tuple[int, int], new_index: int) -> dict[str, int]:
+def update_element_counts(encoded_token_freqs: dict[str, int], pair: tuple[int, int], new_index: int) -> dict[str, int]:
     new_byte_level_counts = {}
-    for elements, counts in byte_level_counts.items():
+    for elements, counts in encoded_token_freqs.items():
         new_element = []
         elements_len = len(elements)
         index = 0
@@ -56,15 +56,15 @@ def update_element_counts(byte_level_counts: dict[str, int], pair: tuple[int, in
         new_byte_level_counts[tuple(new_element)] = counts
     return new_byte_level_counts  
 
-def initiate_vocab(special_tokens: list[str]) ->  dict[int, bytes]:
+def build_initial_vocab(special_tokens: list[str]) ->  dict[int, bytes]:
     vocab = {i:bytes([i]) for i in range(256)}
     for i, tok in enumerate(special_tokens, start=256):
         vocab[i] = tok.encode("utf-8")
     return vocab   
 
-def find_max_pair(pair_counts: dict[tuple[int,int], int], vocab:dict[int, bytes]) -> tuple[int, int]:
-    max_count = max(pair_counts.values())
-    candidate_pairs = [key for key, value in pair_counts.items() if value == max_count]
+def select_merge_pair(pair_freqs: dict[tuple[int,int], int], vocab:dict[int, bytes]) -> tuple[int, int]:
+    max_count = max(pair_freqs.values())
+    candidate_pairs = [key for key, value in pair_freqs.items() if value == max_count]
     def sort_pair(pair):
         index1, index2 = pair
         return(vocab[index1], vocab[index2])
@@ -73,15 +73,15 @@ def find_max_pair(pair_counts: dict[tuple[int,int], int], vocab:dict[int, bytes]
 
 
 def pre_tokenize(string: str,special_tokens: list[str]) -> dict[str, int]:
-    string_list = split_string(string, special_tokens)
-    word_level_counts = get_tok_counts(string_list)
-    return word_level_counts
+    string_list = split_by_special_tokens(string, special_tokens)
+    token_freqs = count_tokens(string_list)
+    return token_freqs
 
-def process_chunk(args):
+def tokenize_chunk(args):
     chunk_text, special_tokens = args
     return pre_tokenize(chunk_text, special_tokens)
 
-def load_txt_in_chunks(input_path: str, special_tokens: list[str], num_processes: int = 16) -> list[str]:
+def read_text_chunks(input_path: str, special_tokens: list[str], num_processes: int = 16) -> list[str]:
     with open(input_path, "rb") as f:
         num_processes = 4
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
@@ -95,11 +95,11 @@ def load_txt_in_chunks(input_path: str, special_tokens: list[str], num_processes
 
 
 def combine_counts(results: list[dict[str,int]]) -> dict[str,int]:
-    word_level_counts = defaultdict(int)
+    token_freqs = defaultdict(int)
     for partial_count in results:
         for word, count in partial_count.items():
-            word_level_counts[word] += count
-    return word_level_counts
+            token_freqs[word] += count
+    return token_freqs
 
 def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     
@@ -110,46 +110,59 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
     
     @timed("📖 加载文本并切 chunk", steps)
     def step1():
-        return load_txt_in_chunks(input_path, special_tokens, num_processes)
+        return read_text_chunks(input_path, special_tokens, num_processes)
     
     @timed("🧮 多进程分词统计", steps)
     def step2(chunks):
         with Pool(num_processes) as pool:
-            return pool.map(process_chunk, chunks)
+            return pool.map(tokenize_chunk, chunks)
     
     @timed("📦 合并词频", steps)
     def step3(results):
-        word_level_counts = combine_counts(results)
-        return word_level_counts
+        token_freqs = combine_counts(results)
+        return token_freqs
     
     @timed("🔤 构建 byte 级统计", steps)
     def step4(word_counts):
-        return get_byte_counts(word_counts)
+        return encode_and_count_tokens(word_counts)
     
     @timed("🧠 BPE 合并主循环", steps)
-    def step5(byte_counts):
-        vocab = initiate_vocab(special_tokens)
+    def step5(encoded_token_freqs):
+        vocab = build_initial_vocab(special_tokens)
         vocab_len = len(vocab)
         merges = []
+        total_get_pair_time = 0.0
+        total_find_pair_time = 0.0
+        total_update_time = 0.0
         while vocab_len < vocab_size:
-            pair_counts = get_pair_counts(byte_counts)
-            if not pair_counts:
+            t0 = time.perf_counter()
+            pair_freqs = count_byte_pairs(encoded_token_freqs)
+            t1 = time.perf_counter()
+            if not pair_freqs:
                 break
-            pair = find_max_pair(pair_counts, vocab)
+            pair = select_merge_pair(pair_freqs, vocab)
+            t2 = time.perf_counter()
             index1, index2 = pair
             new_token = vocab[index1] + vocab[index2]
             new_index = vocab_len
-            byte_counts = update_element_counts(byte_counts, pair, new_index)
+            encoded_token_freqs = update_element_counts(encoded_token_freqs, pair, new_index)
+            t3 = time.perf_counter()
             merges.append((vocab[index1], vocab[index2]))
             vocab[new_index] = new_token
             vocab_len += 1
+            total_get_pair_time += t1 - t0
+            total_find_pair_time += t2 - t1
+            total_update_time += t3 - t2
+        print(f"\n⏱️ 总计 count_byte_pairs 时间: {total_get_pair_time:.2f}s")
+        print(f"⏱️ 总计 select_merge_pair 时间: {total_find_pair_time:.2f}s")
+        print(f"⏱️ 总计 update_element_counts 时间: {total_update_time:.2f}s")
         return vocab, merges
     
     chunks = step1()
     results = step2(chunks)
-    word_level_counts = step3(results)
-    byte_level_counts = step4(word_level_counts)
-    vocab, merges = step5(byte_level_counts)
+    token_freqs = step3(results)
+    encoded_token_freqs = step4(token_freqs)
+    vocab, merges = step5(encoded_token_freqs)
     
     total_end_time = time.perf_counter()
     current, peak = tracemalloc.get_traced_memory()
