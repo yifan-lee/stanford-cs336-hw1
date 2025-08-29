@@ -6,6 +6,7 @@ from support.find_chunk_boundaries import find_chunk_boundaries
 from memory_profiler import profile
 import time, tracemalloc
 from dataclasses import dataclass
+from tqdm import tqdm
 
 
 Pair = tuple[int,int]
@@ -255,14 +256,15 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
         total_update_pair_freqs_time = 0.0
         total_update_pair_inhereit_time = 0.0
         total_get_pair_inhereit_delta_time = 0.0
-        while vocab_len < vocab_size:
+        for new_index in tqdm(range(vocab_len, vocab_size)):
+        # while vocab_len < vocab_size:
             t0 = time.perf_counter()
             if not pair_freqs:
                 break
             pair = select_merge_pair(pair_freqs, vocab)
             index1, index2 = pair
             new_token = vocab[int(index1)]+vocab[int(index2)]
-            new_index = vocab_len
+            # new_index = vocab_len
             vocab[new_index] = new_token
             merges.append((vocab[int(index1)], vocab[int(index2)]))
             tok_need_update = pair_inhereit[pair]
@@ -280,7 +282,7 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
             t6 = time.perf_counter()
             pair_inhereit = exclude_pair_from_dict(pair_inhereit, pair)
             pair_inhereit = update_pair_inhereit(pair_inhereit, pair_inhereit_d)
-            vocab_len+=1
+            # vocab_len+=1
             t7 = time.perf_counter()
             total_get_pair_time += t1 - t0
             total_get_plan_time += t2 - t1
@@ -339,3 +341,23 @@ def timed(name, snapshot_list):
             return result
         return inner
     return wrapper
+
+
+def show_progress(current: int, start: int, end: int, last_percent: int=-1) -> int:
+    """显示整数百分比进度，只在变化时输出。
+
+    参数：
+    - current: 当前 index
+    - start: 起始 index
+    - end: 结束 index
+    - last_percent: 上一次显示的整数百分比
+
+    返回：
+    - 当前的整数百分比（用于更新 last_percent）
+    """
+    total = end - start
+    percent = int(((current - start + 1) / total) * 100)
+    if percent != last_percent:
+        print(f"\rProgress: {percent}%", end="", flush=True)
+        return percent
+    return last_percent
