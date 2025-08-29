@@ -45,9 +45,8 @@ def tokenize_chunk(args):
     chunk_text, special_tokens = args
     return pre_tokenize(chunk_text, special_tokens)
 
-def read_text_chunks(input_path: str, special_tokens: list[str], num_processes: int = 16) -> list[str]:
+def read_text_chunks(input_path: str, special_tokens: list[str], num_processes: int = 4) -> list[str]:
     with open(input_path, "rb") as f:
-        num_processes = 4
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 
         chunks = []
@@ -220,7 +219,7 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
     tracemalloc.start()
     total_start_time = time.perf_counter()
     steps = []
-    num_processes = 16
+    num_processes = 10
     
     @timed("📖 加载文本并切 chunk", steps)
     def step1():
@@ -288,15 +287,15 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
             total_update_encoded_token_freqs_time += t3 - t2
             total_get_pair_freqs_delta_time += t4 - t3
             total_update_pair_freqs_time += t5 - t4
-            total_update_pair_inhereit_time += t6 - t5
-            total_get_pair_inhereit_delta_time += t7 - t6
+            total_get_pair_inhereit_delta_time += t6 - t5
+            total_update_pair_inhereit_time += t7 - t6
         print(f"\n⏱️ 总计 count_byte_pairs 时间: {total_get_pair_time:.2f}s")
         print(f"⏱️ 总计 get_plan 时间: {total_get_plan_time:.2f}s")
         print(f"⏱️ 总计 update_encoded_token_freqs 时间: {total_update_encoded_token_freqs_time:.2f}s")
         print(f"⏱️ 总计 get_pair_freqs_delta 时间: {total_get_pair_freqs_delta_time:.2f}s")
         print(f"⏱️ 总计 update_pair_freqs 时间: {total_update_pair_freqs_time:.2f}s")
+        print(f"⏱️ 总计 get_pair_inhereit_delta 时间: {total_get_pair_inhereit_delta_time:.2f}s")
         print(f"⏱️ 总计 update_pair_inhereit 时间: {total_update_pair_inhereit_time:.2f}s")
-        print(f"⏱️ 总计 et_pair_inhereit_delta 时间: {total_get_pair_inhereit_delta_time:.2f}s")
         return vocab, merges
     
     chunks = step1()

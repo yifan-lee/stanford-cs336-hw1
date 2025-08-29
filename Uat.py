@@ -19,7 +19,7 @@ def load_parameter(path):
 if __name__ == "__main__":
 
     special_tokens = ['<|endoftext|>']
-    input_path = r'./data/TinyStoriesV2-GPT4-valid.txt'
+    input_path = r'./data/owt_train.txt'
     vocab_size = 1000
 
     vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
