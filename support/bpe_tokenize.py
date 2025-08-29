@@ -1,75 +1,38 @@
+import pandas as pd
 from collections import defaultdict
 import regex as re
 from multiprocessing import Pool
 from support.find_chunk_boundaries import find_chunk_boundaries
-# from memory_profiler import profile
+from memory_profiler import profile
 import time, tracemalloc
+from dataclasses import dataclass
 
 
-def read_text_file(input_path: str) -> str:
-    with open(input_path, "r", encoding="utf-8") as f:
-        text = f.read()
-    return text
-
-def split_by_special_tokens(string: str, special_tokens: list[str]) -> list[str]:
-    pattern = "|".join(re.escape(tok) for tok in special_tokens)
-    return re.split(pattern,string)
-
+Pair = tuple[int,int]
+Encoded_Token = tuple[int, ...]
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-def count_tokens(string_list: list[str]) -> dict[str, int]:
-    counts = defaultdict(int)
-    for s in string_list:
-        tokens = re.finditer(PAT, s)
-        for m in tokens:
-            tok = m.group(0)
-            counts[tok] += 1
-    return counts
-
-def encode_and_count_tokens(counts: dict[str, int])-> dict[str, int]:
-    element_counts = defaultdict(int)
-    for token, count in counts.items():
-        elements = tuple(token.encode("utf-8"))
-        element_counts[elements] += count
-    return element_counts
-
-def count_byte_pairs(element_counts: dict[str, int]) -> dict[tuple[int,int], int]:
-    pair_freqs = defaultdict(int)
-    for elements, count in element_counts.items():
-        for i in range(len(elements)-1):
-            pair_freqs[(elements[i],elements[i+1])] += count
-    return pair_freqs
 
 
-def update_element_counts(encoded_token_freqs: dict[str, int], pair: tuple[int, int], new_index: int) -> dict[str, int]:
-    new_byte_level_counts = {}
-    for elements, counts in encoded_token_freqs.items():
-        new_element = []
-        elements_len = len(elements)
-        index = 0
-        while index <= elements_len-1:
-            if (index < elements_len-1) and (elements[index] == pair[0]) and (elements[index+1] == pair[1]):
-                new_element.append(new_index)
-                index += 2
-            else:
-                new_element.append(elements[index])
-                index += 1
-        new_byte_level_counts[tuple(new_element)] = counts
-    return new_byte_level_counts  
+@dataclass(frozen=True)
+class TokenMergePlan():
+    old_token: Encoded_Token
+    new_token: Encoded_Token
+    count: int
+    pair_positions: list[int]
 
-def build_initial_vocab(special_tokens: list[str]) ->  dict[int, bytes]:
-    vocab = {i:bytes([i]) for i in range(256)}
-    for i, tok in enumerate(special_tokens, start=256):
-        vocab[i] = tok.encode("utf-8")
-    return vocab   
+class PairFreqsDelta():
+    inc: defaultdict[Pair, int]
+    inc: defaultdict[Pair, int]
+    def __init__(self):
+        self.inc = defaultdict(int)
+        self.dec = defaultdict(int)
 
-def select_merge_pair(pair_freqs: dict[tuple[int,int], int], vocab:dict[int, bytes]) -> tuple[int, int]:
-    max_count = max(pair_freqs.values())
-    candidate_pairs = [key for key, value in pair_freqs.items() if value == max_count]
-    def sort_pair(pair):
-        index1, index2 = pair
-        return(vocab[index1], vocab[index2])
-    pair = max(candidate_pairs, key = sort_pair)
-    return pair
+class PairInhereitDelta():
+    add: defaultdict[Pair,Encoded_Token]
+    remove: defaultdict[Pair,Encoded_Token]
+    def __init__(self):
+        self.add = defaultdict(Encoded_Token)
+        self.remove = defaultdict(Encoded_Token)
 
 
 def pre_tokenize(string: str,special_tokens: list[str]) -> dict[str, int]:
@@ -101,6 +64,152 @@ def combine_counts(results: list[dict[str,int]]) -> dict[str,int]:
             token_freqs[word] += count
     return token_freqs
 
+def read_text_file(input_path: str) -> str:
+    with open(input_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    return text
+
+def split_by_special_tokens(string: str, special_tokens: list[str]) -> list[str]:
+    pattern = "|".join(re.escape(tok) for tok in special_tokens)
+    return re.split(pattern,string)
+
+def count_tokens(string_list: list[str]) -> dict[str, int]:
+    counts = defaultdict(int)
+    for s in string_list:
+        tokens = re.finditer(PAT, s)
+        for m in tokens:
+            tok = m.group(0)
+            counts[tok] += 1
+    return counts
+
+def encode_and_count_tokens(counts: dict[str, int])-> dict[Encoded_Token, int]:
+    encoded_token_freqs = defaultdict(int)
+    for token, count in counts.items():
+        elements = tuple(token.encode("utf-8"))
+        encoded_token_freqs[elements] += count
+    return encoded_token_freqs
+
+def build_initial_vocab(special_tokens: list[str]) ->  dict[int, bytes]:
+    vocab = {i:bytes([i]) for i in range(256)}
+    for i, tok in enumerate(special_tokens, start=256):
+        vocab[i] = tok.encode("utf-8")
+    return vocab
+
+def get_byte_pairs(encoded_token_freqs: dict[Encoded_Token, int]) -> dict[Pair, int]:
+    pair_freqs = defaultdict(int)
+    for tok, count in encoded_token_freqs.items():
+        for i in range(len(tok)-1):
+            pair_freqs[(tok[i],tok[i+1])] += count
+    return pair_freqs
+
+def get_byte_pairs_inhereit(encoded_token_freqs: dict[Encoded_Token, int]) -> dict[Pair, set[Encoded_Token]]:
+    pair_inhereit = defaultdict(set)
+    for tok, count in encoded_token_freqs.items():
+        for i in range(len(tok)-1):
+            pair_inhereit[(tok[i],tok[i+1])].add(tok)
+    return pair_inhereit
+
+def select_merge_pair(pair_freqs: dict[Pair, int], vocab:dict[int, bytes]) -> Pair:
+    max_count = max(pair_freqs.values())
+    candidate_pairs = [key for key, value in pair_freqs.items() if value == max_count]
+    def sort_pair(pair):
+        index1, index2 = pair
+        return(vocab[index1], vocab[index2])
+    pair = max(candidate_pairs, key = sort_pair)
+    return pair
+
+def update_encoded_token(encoded_token: Encoded_Token, pair: Pair, new_index: int) -> Encoded_Token:
+    result = []
+    i = 0
+    while i < len(encoded_token):
+        if i < len(encoded_token) - 1 and (encoded_token[i], encoded_token[i + 1]) == pair:
+            result.append(new_index)
+            i += 2
+        else:
+            result.append(encoded_token[i])
+            i += 1
+    return tuple(result)
+
+def find_subtuple_index(sequence: tuple, subseq: tuple) -> list[int]:
+    position = []
+    subseq_len = len(subseq)
+    for i in range(len(sequence)-subseq_len+1):
+        if sequence[i:i+subseq_len] == subseq:
+            position.append(i)
+    return position
+
+def remove_or_decrement_pair(pair_freqs: dict[Pair, int], pair: Pair, count: int) -> dict[Pair, int]:
+    updated_pair_freqs = pair_freqs.copy()
+    if updated_pair_freqs[pair] == count:
+        del updated_pair_freqs[pair]
+    else:
+        updated_pair_freqs[pair] -= count
+    return updated_pair_freqs
+
+def build_merge_plan(tok_need_update: set[Encoded_Token], encoded_token_freqs: dict[Encoded_Token, int], pair: Pair, new_index: int) -> list[TokenMergePlan]:
+    plan = []
+    for encoded_token in tok_need_update:
+        new_encoded_token = update_encoded_token(encoded_token, pair, new_index)
+        count = encoded_token_freqs[encoded_token]
+        pair_positions = find_subtuple_index(encoded_token,pair)
+        plan.append(TokenMergePlan(encoded_token,new_encoded_token,count,pair_positions))
+    return plan
+
+def update_encoded_token_freqs(plan: list[TokenMergePlan], encoded_token_freqs: dict[Encoded_Token, int]) ->  dict[Encoded_Token, int]:
+    new_encoded_token_freqs = encoded_token_freqs.copy()
+    for item in plan:
+        del new_encoded_token_freqs[item.old_token]
+        new_encoded_token_freqs[item.new_token] = item.count
+    return new_encoded_token_freqs
+
+def compute_freqs_and_inhereit_deltas(plan: list[TokenMergePlan], new_index:int) -> tuple[PairFreqsDelta, PairInhereitDelta]:
+    pair_freqs_d = PairFreqsDelta()
+    pair_inhereit_d = PairInhereitDelta()
+    for item in plan:
+        old_token = item.old_token
+        new_token = item.new_token
+        count = item.count
+
+        for pos in item.pair_positions:
+            if pos > 0:
+                pre_token = old_token[pos-1]
+                old_pair = (pre_token,old_token[pos])
+                new_pair = (pre_token, new_index)
+                pair_freqs_d.dec[old_pair] = count
+                pair_freqs_d.inc[new_pair] = count
+                pair_inhereit_d.add[new_pair] = new_token
+                pair_inhereit_d.remove[old_pair] = old_token
+            if pos < len(old_token)-2:
+                pos_token = old_token[pos+2]
+                old_pair = (old_token[pos+1],pos_token)
+                new_pair = (new_index, pos_token)
+                pair_freqs_d.dec[old_pair] = count
+                pair_freqs_d.inc[new_pair] = count
+                pair_inhereit_d.add[new_pair] = new_token
+                pair_inhereit_d.remove[old_pair] = old_token
+    return pair_freqs_d, pair_inhereit_d
+
+def exclude_pair_from_dict(d: dict, pair: Pair):
+    new_d = d.copy()
+    del new_d[pair]
+    return new_d
+
+def update_pair_freqs(pair_freqs: dict[Pair, int], pair_freqs_d: PairFreqsDelta):
+    new_pair_freqs = pair_freqs.copy()
+    for key, value in pair_freqs_d.dec.items():
+        new_pair_freqs = remove_or_decrement_pair(new_pair_freqs, key, value)
+    for key, value in pair_freqs_d.inc.items():
+        new_pair_freqs[key]+=value
+    return new_pair_freqs
+
+def update_pair_inhereit(pair_inhereit: dict[Pair, set[Encoded_Token]], pair_inhereit_d: PairInhereitDelta):
+    new_pair_inhereit = pair_inhereit.copy()
+    for key, value in pair_inhereit_d.remove.items():
+        new_pair_inhereit[key].discard(value)
+    for key, value in pair_inhereit_d.add.items():
+        new_pair_inhereit[key].add(value)
+    return new_pair_inhereit
+
 def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     
     tracemalloc.start()
@@ -123,39 +232,61 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
         return token_freqs
     
     @timed("🔤 构建 byte 级统计", steps)
-    def step4(word_counts):
-        return encode_and_count_tokens(word_counts)
+    def step4(token_freqs):
+        return encode_and_count_tokens(token_freqs)
     
     @timed("🧠 BPE 合并主循环", steps)
     def step5(encoded_token_freqs):
         vocab = build_initial_vocab(special_tokens)
         vocab_len = len(vocab)
         merges = []
+        
+        pair_freqs = get_byte_pairs(encoded_token_freqs)
+        pair_inhereit = get_byte_pairs_inhereit(encoded_token_freqs)
+        
         total_get_pair_time = 0.0
-        total_find_pair_time = 0.0
-        total_update_time = 0.0
+        total_get_plan_time = 0.0
+        total_update_encoded_token_freqs_time = 0.0
+        total_get_delta_time = 0.0
+        total_update_pair_freqs_time = 0.0
+        total_update_pair_inhereit_time = 0.0
         while vocab_len < vocab_size:
             t0 = time.perf_counter()
-            pair_freqs = count_byte_pairs(encoded_token_freqs)
-            t1 = time.perf_counter()
             if not pair_freqs:
                 break
             pair = select_merge_pair(pair_freqs, vocab)
-            t2 = time.perf_counter()
             index1, index2 = pair
-            new_token = vocab[index1] + vocab[index2]
+            new_token = vocab[int(index1)]+vocab[int(index2)]
             new_index = vocab_len
-            encoded_token_freqs = update_element_counts(encoded_token_freqs, pair, new_index)
-            t3 = time.perf_counter()
-            merges.append((vocab[index1], vocab[index2]))
             vocab[new_index] = new_token
-            vocab_len += 1
+            merges.append((vocab[int(index1)], vocab[int(index2)]))
+            tok_need_update = pair_inhereit[pair]
+            t1 = time.perf_counter()
+            plan = build_merge_plan(tok_need_update, encoded_token_freqs, pair, new_index)
+            t2 = time.perf_counter()
+            encoded_token_freqs = update_encoded_token_freqs(plan, encoded_token_freqs)
+            t3 = time.perf_counter()
+            pair_freqs_d, pair_inhereit_d = compute_freqs_and_inhereit_deltas(plan, new_index)
+            t4 = time.perf_counter()
+            pair_freqs = exclude_pair_from_dict(pair_freqs, pair)
+            pair_freqs = update_pair_freqs(pair_freqs, pair_freqs_d)
+            t5 = time.perf_counter()
+            pair_inhereit = exclude_pair_from_dict(pair_inhereit, pair)
+            pair_inhereit = update_pair_inhereit(pair_inhereit, pair_inhereit_d)
+            vocab_len+=1
+            t6 = time.perf_counter()
             total_get_pair_time += t1 - t0
-            total_find_pair_time += t2 - t1
-            total_update_time += t3 - t2
+            total_get_plan_time += t2 - t1
+            total_update_encoded_token_freqs_time += t3 - t2
+            total_get_delta_time += t4 - t3
+            total_update_pair_freqs_time += t5 - t4
+            total_update_pair_inhereit_time += t6 - t5
         print(f"\n⏱️ 总计 count_byte_pairs 时间: {total_get_pair_time:.2f}s")
-        print(f"⏱️ 总计 select_merge_pair 时间: {total_find_pair_time:.2f}s")
-        print(f"⏱️ 总计 update_element_counts 时间: {total_update_time:.2f}s")
+        print(f"⏱️ 总计 get_plan 时间: {total_get_plan_time:.2f}s")
+        print(f"⏱️ 总计 update_encoded_token_freqs 时间: {total_update_encoded_token_freqs_time:.2f}s")
+        print(f"⏱️ 总计 get_delta 时间: {total_get_delta_time:.2f}s")
+        print(f"⏱️ 总计 update_pair_freqs 时间: {total_update_pair_freqs_time:.2f}s")
+        print(f"⏱️ 总计 update_pair_inhereit 时间: {total_update_pair_inhereit_time:.2f}s")
         return vocab, merges
     
     chunks = step1()
