@@ -139,15 +139,13 @@ def find_subtuple_index(sequence: tuple, subseq: tuple) -> list[int]:
             position.append(i)
     return position
 
-def remove_or_decrement_pair(pair_freqs: dict[Pair, int], pair: Pair, count: int):
-    pair_freqs[pair] -= count
-    if pair_freqs[pair] <= 0:
-        del pair_freqs[pair]
-        
-def remove_or_decrement_pair2(pair_freqs: dict[Pair, set], pair: Pair, to_remove: set):
-    pair_freqs[pair] -= to_remove  # 使用 set 差集
-    if not pair_freqs[pair]:       # 如果变成空集
-        del pair_freqs[pair]
+def remove_or_decrement_pair(pair_freqs: dict[Pair, int], pair: Pair, count: int) -> dict[Pair, int]:
+    updated_pair_freqs = pair_freqs.copy()
+    if updated_pair_freqs[pair] == count:
+        del updated_pair_freqs[pair]
+    else:
+        updated_pair_freqs[pair] -= count
+    return updated_pair_freqs
 
 def build_merge_plan(tok_need_update: set[Encoded_Token], encoded_token_freqs: dict[Encoded_Token, int], pair: Pair, new_index: int) -> list[TokenMergePlan]:
     plan = []
@@ -158,10 +156,12 @@ def build_merge_plan(tok_need_update: set[Encoded_Token], encoded_token_freqs: d
         plan.append(TokenMergePlan(encoded_token,new_encoded_token,count,pair_positions))
     return plan
 
-def update_encoded_token_freqs(plan: list[TokenMergePlan], encoded_token_freqs: dict[Encoded_Token, int]):
+def update_encoded_token_freqs(plan: list[TokenMergePlan], encoded_token_freqs: dict[Encoded_Token, int]) ->  dict[Encoded_Token, int]:
+    new_encoded_token_freqs = encoded_token_freqs.copy()
     for item in plan:
-        count =  encoded_token_freqs.pop(item.old_token)
-        encoded_token_freqs[item.new_token] = count
+        del new_encoded_token_freqs[item.old_token]
+        new_encoded_token_freqs[item.new_token] = item.count
+    return new_encoded_token_freqs
 
 def compute_freqs_deltas(plan: list[TokenMergePlan], new_index:int) -> PairFreqsDelta:
     pair_freqs_d = PairFreqsDelta()
@@ -195,19 +195,25 @@ def compute_inhereit_deltas(plan: list[TokenMergePlan]) -> PairInhereitDelta:
     return pair_inhereit_d 
 
 def exclude_pair_from_dict(d: dict, pair: Pair):
-    del d[pair]
+    new_d = d.copy()
+    del new_d[pair]
+    return new_d
 
 def update_pair_freqs(pair_freqs: dict[Pair, int], pair_freqs_d: PairFreqsDelta):
+    new_pair_freqs = pair_freqs.copy()
     for key, value in pair_freqs_d.dec.items():
-        remove_or_decrement_pair(pair_freqs, key, value)
+        new_pair_freqs = remove_or_decrement_pair(new_pair_freqs, key, value)
     for key, value in pair_freqs_d.inc.items():
-        pair_freqs[key]+=value
+        new_pair_freqs[key]+=value
+    return new_pair_freqs
 
 def update_pair_inhereit(pair_inhereit: dict[Pair, set[Encoded_Token]], pair_inhereit_d: PairInhereitDelta):
+    new_pair_inhereit = pair_inhereit.copy()
     for key, value in pair_inhereit_d.remove.items():
-        remove_or_decrement_pair2(pair_inhereit, key, value)
+        new_pair_inhereit[key] -= value
     for key, value in pair_inhereit_d.add.items():
-        pair_inhereit[key] = pair_inhereit[key] | value
+        new_pair_inhereit[key] = new_pair_inhereit[key] | value
+    return new_pair_inhereit
 
 def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     
@@ -265,17 +271,17 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
             t1 = time.perf_counter()
             plan = build_merge_plan(tok_need_update, encoded_token_freqs, pair, new_index)
             t2 = time.perf_counter()
-            update_encoded_token_freqs(plan, encoded_token_freqs)
+            encoded_token_freqs = update_encoded_token_freqs(plan, encoded_token_freqs)
             t3 = time.perf_counter()
             pair_freqs_d = compute_freqs_deltas(plan, new_index)
             t4 = time.perf_counter()
-            exclude_pair_from_dict(pair_freqs, pair)
-            update_pair_freqs(pair_freqs, pair_freqs_d)
+            pair_freqs = exclude_pair_from_dict(pair_freqs, pair)
+            pair_freqs = update_pair_freqs(pair_freqs, pair_freqs_d)
             t5 = time.perf_counter()
             pair_inhereit_d = compute_inhereit_deltas(plan)
             t6 = time.perf_counter()
-            exclude_pair_from_dict(pair_inhereit, pair)
-            update_pair_inhereit(pair_inhereit, pair_inhereit_d)
+            pair_inhereit = exclude_pair_from_dict(pair_inhereit, pair)
+            pair_inhereit = update_pair_inhereit(pair_inhereit, pair_inhereit_d)
             # vocab_len+=1
             t7 = time.perf_counter()
             total_get_pair_time += t1 - t0
