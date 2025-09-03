@@ -1,4 +1,6 @@
 import pandas as pd
+import numpy as np
+from numpy.typing import NDArray
 from collections import defaultdict
 import regex as re
 from multiprocessing import Pool
@@ -7,11 +9,134 @@ from memory_profiler import profile
 import time, tracemalloc
 from dataclasses import dataclass
 from tqdm import tqdm
+from typing import BinaryIO, Iterable, Iterator
 
 
 Pair = tuple[int,int]
 Encoded_Token = tuple[int, ...]
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
+
+
+class Tokenizer():
+    def __init__(self, vocab:  dict[int, bytes], merges: list[Pair], special_tokens: list[str] | None=None):
+        self.vocab = vocab
+        self.merges = merges
+        self.special_tokens = special_tokens
+        
+        self.add_special_tokes_to_vocab()
+        self.generate_tok_to_id()
+        
+        
+    def add_special_tokes_to_vocab(self):
+        if self.special_tokens is not None:
+            toks = sorted(self.special_tokens, key=len, reverse=True)
+            vocab_len = len(self.vocab)
+            vocab_values = set(x for x in self.vocab.values())
+            for tok in toks:
+                if bytes(tok.encode("utf-8")) not in vocab_values:
+                    self.vocab[vocab_len] = bytes(tok.encode("utf-8"))
+                    vocab_len += 1
+                    
+    def generate_tok_to_id(self):
+        self.tok_to_id = {value: key for key, value in self.vocab.items()}
+        
+        
+    @classmethod
+    def from_files(
+        cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None
+    ):
+        """
+        Class method that constructs and return a Tokenizer from a serialized vocabulary and list of merges
+        (in the same format that your BPE training code output) and (optionally) a list of special
+        tokens.
+        """
+        import pickle
+
+        with open(vocab_filepath, "rb") as vf:
+            vocab: dict[int, bytes] = pickle.load(vf)
+        with open(merges_filepath, "rb") as mf:
+            merges: list[Pair] = pickle.load(mf)
+        return cls(vocab=vocab, merges=merges, special_tokens=special_tokens)
+    
+    def encode(self, text: str) -> NDArray[np.uint16]:
+        segments = self.split_text_to_segments(text)
+        encoded_segments, _ = self.encode_segments(segments)
+        return np.array(encoded_segments, dtype=np.uint16)
+    
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        for chunk in iterable:
+            for _id in self.encode(chunk):
+                yield _id
+    
+    def decode(self, ids: list[int]) -> str:
+        text_list = [
+            self.vocab[id].decode('utf-8', errors='replace') if id in self.vocab
+            else '\uFFFD'
+            for id in ids
+        ]
+        text = "".join(text_list)
+        return text
+    
+    
+    ## Helper
+    def split_text_to_segments(self, text: str) -> list[str]:
+        text = text.replace("\r\n", "\n").replace("\r", "")
+        if self.special_tokens is None:
+            return [text]
+        else:
+            pattern = "("+"|".join(re.escape(tok) for tok in self.special_tokens)+")"
+            segments = re.split(pattern,text)
+        return segments
+    
+    def encode_segments(self, segments:list[str]) -> tuple[list[int], list[str]]:
+        encoded_segments = []
+        merged_segments = []
+        for seg in segments:
+            encoded_s, merged_s = self.encode_seg(seg)
+            encoded_segments += encoded_s
+            merged_segments += merged_s
+        return encoded_segments, merged_segments
+            
+    
+    def encode_seg(self, seg:str) -> tuple[list[int], list[str]]:
+        merged_s = []
+        encoded_s = []
+        if (self.special_tokens is not None) and (seg in self.special_tokens):
+            merged_s += [bytes(seg.encode("utf-8"))]
+            encoded_s += [self.tok_to_id[bytes(seg.encode("utf-8"))]]
+        else:
+            tokens = re.finditer(PAT, seg)
+            for m in tokens:
+                tok = m.group(0)
+                bytes_tok = tuple(bytes([b]) for b in tok.encode("utf-8"))
+                merged_tok =  self.bpe_encoding_tok(bytes_tok)
+                merged_s += merged_tok
+                encoder_tok = []
+                for i in merged_tok:
+                    encoder_tok.append(self.tok_to_id[i])
+                encoded_s += (encoder_tok)
+        return encoded_s, merged_s
+    
+    def bpe_encoding_tok(self, bytes_tok: tuple[bytes,...]) -> tuple[bytes,...]:
+        start_len = len(bytes_tok)+1
+        while len(bytes_tok) != start_len:
+            start_len = len(bytes_tok)
+            for pair in self.merges:
+                pos = self.is_subtuple(pair, bytes_tok)
+                if pos != -1:
+                    bytes_tok = bytes_tok[:pos]+(bytes_tok[pos]+bytes_tok[pos+1],)+bytes_tok[pos+2:]
+                    break
+        return bytes_tok
+    
+    
+    def is_subtuple(self,small: tuple, big: tuple) -> int:
+        n, m = len(small), len(big)
+        for i in range(m - n + 1):
+            if big[i:i+n] == small:
+                return i
+        return -1
+
 
 
 
