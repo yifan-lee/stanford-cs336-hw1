@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from einops import rearrange, einsum
+from einops import rearrange, einsum, reduce
 
 
 class Linear(nn.Module):
@@ -14,12 +14,12 @@ class Linear(nn.Module):
 
         w = torch.empty(out_features, in_features)
         std = torch.sqrt(torch.tensor(2.0/(in_features+out_features)))
-        self.weight = nn.Parameter(nn.init.trunc_normal_(w, mean=0.0, std=std.item(),a=-3*std.item(),b=3*std.item()))
+        self.weights = nn.Parameter(nn.init.trunc_normal_(w, mean=0.0, std=std.item(),a=-3*std.item(),b=3*std.item()))
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         ## Apply the linear transformation to the input
         output = einsum(
-            x, self.weight,
+            x, self.weights,
             "... in_dim, out_dim in_dim -> ... out_dim"
         )
         return output
@@ -35,7 +35,31 @@ class Embedding(nn.Module):
         
         w = torch.empty(num_embeddings, embedding_dim)
         std = 1.0
-        self.weight = nn.Parameter(nn.init.trunc_normal_(w, mean=0.0, std=std,a=-3,b=3))
+        self.weights = nn.Parameter(nn.init.trunc_normal_(w, mean=0.0, std=std,a=-3,b=3))
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         ## Lookup the embedding vectors for the given token IDs.
-        return self.weight[token_ids]
+        return self.weights[token_ids]
+    
+    
+class RMSNorm(nn.Module):
+    def __init__(self, d_model: int, eps: float = 1e-5, device=None, dtype=None):
+        ## Construct the RMSNorm module.
+        super().__init__()
+        self.d_model = d_model ## Hidden dimension of the model
+        self.eps = eps ## Epsilon value for numerical stability
+        self.device = device ## Device to store the parameters on
+        self.dtype = dtype ## Data type of the parameters
+
+        self.weights = nn.Parameter(torch.ones(d_model))
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        ## Process an input tensor of shape
+        
+        in_dtype = x.dtype
+        x = x.to(torch.float32)
+        x_squaremean = reduce(
+            x**2, "... d_model -> ... 1", 'mean'
+        )
+        x_RMS = (x_squaremean+self.eps).sqrt()
+        result = x / x_RMS * self.weights
+        return result.to(in_dtype)
