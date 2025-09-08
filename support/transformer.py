@@ -63,3 +63,36 @@ class RMSNorm(nn.Module):
         x_RMS = (x_squaremean+self.eps).sqrt()
         result = x / x_RMS * self.weights
         return result.to(in_dtype)
+    
+    
+class SwiGLU(nn.Module):
+    def __init__(self, d_model: int, d_ff: int | None = None):
+        super().__init__()
+        self.d_model = d_model ## Hidden dimension of the model
+        if d_ff is None:
+            q = round(d_model*8/3/64)
+            self.d_ff = q*64
+        else:
+            self.d_ff = d_ff
+        
+        self.w1_weight = nn.Parameter(torch.randn(self.d_ff, self.d_model))
+        self.w2_weight = nn.Parameter(torch.randn(self.d_model, self.d_ff))
+        self.w3_weight = nn.Parameter(torch.randn(self.d_ff, self.d_model))
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w1x = einsum(
+            self.w1_weight, x,
+            "d_ff d_model, ... d_model -> ... d_ff"
+        )
+        w3x = einsum(
+            self.w3_weight, x,
+            "d_ff d_model, ... d_model -> ... d_ff"
+        )
+        SiLUw1x = w1x*torch.sigmoid(w1x)
+        part2 = SiLUw1x * w3x
+        result = einsum(
+            self.w2_weight, part2,
+            "d_model d_ff, ... d_ff -> ... d_model"
+        )
+        return result
+        
