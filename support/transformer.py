@@ -134,3 +134,12 @@ class RotaryPositionalEmbedding(nn.Module):
         y_odd = x_even*sin_expend+x_odd*cos_expend
         y = rearrange(torch.stack([y_even, y_odd], dim=-1), '... s d two -> ... s (d two)')
         return y
+    
+def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
+    x_max = torch.max(x, dim=dim, keepdim=True).values
+    x_subtract_max = x-x_max
+    x_subtract_max_exp = torch.exp(x_subtract_max)
+    x_subtract_max_exp_sum = torch.sum(x_subtract_max_exp, dim=dim, keepdim=True)
+    y = x_subtract_max_exp/x_subtract_max_exp_sum
+    return y
+
