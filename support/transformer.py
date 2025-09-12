@@ -12,9 +12,11 @@ class Linear(nn.Module):
         self.device = device ## Device to store the parameters on
         self.dtype = dtype ## Data type of the parameters
 
-        w = torch.empty(out_features, in_features, device=self.device, dtype=self.dtype)
+        self.weights = nn.Parameter(
+            torch.empty(out_features, in_features, device=self.device, dtype=self.dtype)
+        )
         std = torch.sqrt(torch.tensor(2.0/(in_features+out_features)))
-        self.weights = nn.Parameter(nn.init.trunc_normal_(w, mean=0.0, std=std.item(),a=-3*std.item(),b=3*std.item()))
+        nn.init.trunc_normal_(self.weights, mean=0.0, std=std.item(), a=-3*std.item(), b=3*std.item())
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         ## Apply the linear transformation to the input
@@ -33,16 +35,18 @@ class Embedding(nn.Module):
         self.device = device ## Device to store the parameters on
         self.dtype = dtype ## Data type of the parameters
         
-        w = torch.empty(num_embeddings, embedding_dim, device=self.device, dtype=self.dtype)
+        self.weights = nn.Parameter(
+            torch.empty(num_embeddings, embedding_dim, device=self.device, dtype=self.dtype)
+        )
         std = 1.0
-        self.weights = nn.Parameter(nn.init.trunc_normal_(w, mean=0.0, std=std,a=-3,b=3))
+        nn.init.trunc_normal_(self.weights, mean=0.0, std=std,a=-3,b=3)
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         ## Lookup the embedding vectors for the given token IDs.
         return self.weights[token_ids]
     
     
 class RMSNorm(nn.Module):
-    def __init__(self, d_model: int, eps: float = 1e-5, device=None, dtype=None):
+    def __init__(self, d_model: int, eps: float = 1e-5, device: torch.device | None = None, dtype: torch.dtype | None = None):
         ## Construct the RMSNorm module.
         super().__init__()
         self.d_model = d_model ## Hidden dimension of the model
@@ -54,7 +58,6 @@ class RMSNorm(nn.Module):
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         ## Process an input tensor of shape
-        
         in_dtype = x.dtype
         x = x.to(torch.float32)
         x_squaremean = reduce(
@@ -66,18 +69,20 @@ class RMSNorm(nn.Module):
     
     
 class SwiGLU(nn.Module):
-    def __init__(self, d_model: int, d_ff: int | None = None):
+    def __init__(self, d_model: int, d_ff: int | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None):
         super().__init__()
         self.d_model = d_model ## Hidden dimension of the model
+        self.device = device
+        self.dtype = dtype
         if d_ff is None:
             q = round(d_model*8/3/64)
             self.d_ff = q*64
         else:
             self.d_ff = d_ff
         
-        self.w1_weight = nn.Parameter(torch.randn(self.d_ff, self.d_model))
-        self.w2_weight = nn.Parameter(torch.randn(self.d_model, self.d_ff))
-        self.w3_weight = nn.Parameter(torch.randn(self.d_ff, self.d_model))
+        self.w1_weight = nn.Parameter(torch.randn(self.d_ff, self.d_model, device=self.device, dtype=self.dtype))
+        self.w2_weight = nn.Parameter(torch.randn(self.d_model, self.d_ff, device=self.device, dtype=self.dtype))
+        self.w3_weight = nn.Parameter(torch.randn(self.d_ff, self.d_model, device=self.device, dtype=self.dtype))
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         w1x = einsum(
@@ -98,7 +103,7 @@ class SwiGLU(nn.Module):
     
 
 class RotaryPositionalEmbedding(nn.Module):
-    def __init__(self, theta: float, d_k: int, max_seq_len: int, device: torch.device | None = None):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device: torch.device | None = None, dtype: torch.dtype | None = None):
         ## Construct the RoPE module and create buffers if needed.
         super().__init__()
         assert d_k % 2 == 0, "RoPE requires even head dimension (pairs of features)"
@@ -107,8 +112,8 @@ class RotaryPositionalEmbedding(nn.Module):
         self.max_seq_len = max_seq_len ## Maximum sequence length that will be inputted
         self.device = device ## Device to store the buffer on
 
-        dim_index = torch.arange(self.d_k // 2, dtype=torch.float32)
-        position_index = torch.arange(self.max_seq_len, dtype=torch.float32)
+        dim_index = torch.arange(self.d_k // 2, device=self.device, dtype=torch.float32)
+        position_index = torch.arange(self.max_seq_len, device=self.device, dtype=torch.float32)
         theta_inv_index = self.theta**(-2*dim_index/d_k)
         theta_ik = einsum(
             position_index, theta_inv_index,
@@ -164,3 +169,70 @@ def scaled_dot_product_attention(
     return y
 
 
+
+class MultiheadSelfAttention(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, 
+                theta: float|None=None, max_seq_len: int|None=None,
+                device: torch.device | None = None):
+        super().__init__()
+        ## mplement causal multi-head self-attention
+        self.d_model = d_model ## final dimension of the input
+        self.num_heads = num_heads ## number of heads
+        self.device = device ## Device to store the parameters on
+        self.theta = theta
+        self.max_seq_len = max_seq_len
+        
+        assert d_model%num_heads == 0, "d_model/num_heads need to be int"
+        self.d_k = d_model//num_heads
+        self.d_v = d_model//num_heads
+        
+        self.q_proj_weight = nn.Parameter(torch.randn(self.d_k * num_heads, d_model))
+        self.k_proj_weight = nn.Parameter(torch.randn(self.d_k * num_heads, d_model))
+        self.v_proj_weight = nn.Parameter(torch.randn(self.d_v * num_heads, d_model))
+        self.o_proj_weight = nn.Parameter(torch.randn(d_model, self.d_v * num_heads))
+        
+        self.rope = None
+        if (theta is not None) and (max_seq_len is not None):
+            self.rope = RotaryPositionalEmbedding(theta, self.d_k, max_seq_len)
+    
+    def forward(self, in_features: torch.Tensor, token_positions: torch.Tensor|None=None) -> torch.Tensor:
+        seq_len = in_features.shape[-2]
+        mask = torch.tril(torch.ones(seq_len,seq_len,dtype=torch.bool))
+        Q = einsum(
+            self.q_proj_weight, in_features,
+            "nd_k d_in, ... d_in -> ... nd_k"
+        )
+        Q_head = rearrange(
+            Q, "... seq_len (n d_k) -> ... n seq_len d_k", n = self.num_heads
+        )
+        K = einsum(
+            self.k_proj_weight, in_features,
+            "nd_k d_in, ... d_in -> ... nd_k"
+        )
+        K_head = rearrange(
+            K, "... seq_len (n d_k) -> ... n seq_len d_k", n = self.num_heads
+        )
+        if (self.rope is not None) and (token_positions is not None):
+            position = repeat(
+                token_positions, " ... seq_len -> ... n seq_len", n = self.num_heads
+            )
+            Q_head = self.rope(Q_head, position)
+            K_head = self.rope(K_head, position)
+        V = einsum(
+            self.v_proj_weight, in_features,
+            "nd_v d_in, ... d_in -> ... nd_v"
+        )
+        V_head = rearrange(
+            V, "... seq_len (n d_v) -> ... n seq_len d_v", n = self.num_heads
+        )
+        expend_shape = (*Q_head.shape[:-1], seq_len)
+        mask_boardcasted = mask.expand(expend_shape)
+        head = scaled_dot_product_attention(Q_head,K_head,V_head,mask_boardcasted)
+        head = rearrange(
+            head, "... n seq_len d_v -> ... seq_len (n d_v)"
+        )
+        attention = einsum(
+            head, self.o_proj_weight,
+            "... seq_len d_v,  d_in d_v -> ... seq_len d_in"
+        )
+        return attention

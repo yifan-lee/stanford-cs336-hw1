@@ -10,7 +10,7 @@ import torch
 from torch import Tensor
 
 from support.bpe_tokenize import train_bpe
-from support.transformer import Linear, Embedding, RMSNorm, SwiGLU, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention
+from support.transformer import Linear, Embedding, RMSNorm, SwiGLU, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention, MultiheadSelfAttention
 
 
 
@@ -33,9 +33,8 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
     model = Linear(d_in, d_out)
-    state_dict = {"weight": weights}
+    state_dict = {"weights": weights}
     model.load_state_dict(state_dict)
-
     return model(in_features)
 
 
@@ -58,7 +57,7 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
     model = Embedding(vocab_size, d_model)
-    state_dict = {"weight": weights}
+    state_dict = {"weights": weights}
     model.load_state_dict(state_dict)
 
     return model(token_ids)
@@ -150,7 +149,15 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    model = MultiheadSelfAttention(d_model,num_heads)
+    state_dict = {
+        "q_proj_weight": q_proj_weight,
+        "k_proj_weight": k_proj_weight,
+        "v_proj_weight": v_proj_weight,
+        "o_proj_weight": o_proj_weight,
+    }
+    model.load_state_dict(state_dict)
+    return model(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -190,8 +197,15 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
-
+    model = MultiheadSelfAttention(d_model,num_heads, theta,max_seq_len)
+    state_dict = {
+        "q_proj_weight": q_proj_weight,
+        "k_proj_weight": k_proj_weight,
+        "v_proj_weight": v_proj_weight,
+        "o_proj_weight": o_proj_weight,
+    }
+    model.load_state_dict(state_dict)
+    return model(in_features,token_positions)
 
 def run_rope(
     d_k: int,
