@@ -10,7 +10,7 @@ import torch
 from torch import Tensor
 
 from support.bpe_tokenize import train_bpe
-from support.transformer import Linear, Embedding, RMSNorm, SwiGLU, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention, MultiheadSelfAttention,TransformerBlock
+from support.transformer import Linear, Embedding, RMSNorm, SwiGLU, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention, MultiheadSelfAttention,TransformerBlock,TransformerLM
 
 
 
@@ -386,7 +386,32 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    model = TransformerLM(
+        vocab_size = vocab_size,
+        context_length = context_length,
+        num_layers = num_layers,
+        d_model = d_model,
+        num_heads = num_heads,
+        rope_theta = rope_theta,
+        d_ff = d_ff,
+    )
+    model.embedding.load_state_dict({'weights': weights['token_embeddings.weight']})
+    for i, block in enumerate(model.transformer_blocks):
+        block.mha.W_q.load_state_dict({"weights": weights[f"layers.{i}.attn.q_proj.weight"]})
+        block.mha.W_k.load_state_dict({"weights": weights[f"layers.{i}.attn.k_proj.weight"]})
+        block.mha.W_v.load_state_dict({"weights": weights[f"layers.{i}.attn.v_proj.weight"]})
+        block.mha.W_o.load_state_dict({"weights": weights[f"layers.{i}.attn.output_proj.weight"]})
+
+        block.ffn.w1_weight.load_state_dict({"weights": weights[f"layers.{i}.ffn.w1.weight"]})
+        block.ffn.w2_weight.load_state_dict({"weights": weights[f"layers.{i}.ffn.w2.weight"]})
+        block.ffn.w3_weight.load_state_dict({"weights": weights[f"layers.{i}.ffn.w3.weight"]})
+
+        block.rms_norm1.load_state_dict({"weights": weights[f"layers.{i}.ln1.weight"]})
+        block.rms_norm2.load_state_dict({"weights": weights[f"layers.{i}.ln2.weight"]})
+    model.rms_norm.load_state_dict({'weights': weights['ln_final.weight']})
+    model.linear.load_state_dict({'weights': weights['lm_head.weight']})
+    output = model(in_indices)
+    return output
 
 
 def run_rmsnorm(

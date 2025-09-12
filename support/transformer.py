@@ -94,18 +94,18 @@ class SwiGLU(nn.Module):
     
 
 class RotaryPositionalEmbedding(nn.Module):
-    def __init__(self, theta: float, d_k: int, max_seq_len: int, device: torch.device | None = None, dtype: torch.dtype | None = None):
+    def __init__(self, rope_theta: float, d_k: int, max_seq_len: int, device: torch.device | None = None, dtype: torch.dtype | None = None):
         ## Construct the RoPE module and create buffers if needed.
         super().__init__()
         assert d_k % 2 == 0, "RoPE requires even head dimension (pairs of features)"
-        self.theta = theta ## $\\Theta$ value for the RoPE
+        self.rope_theta = rope_theta ## $\\Theta$ value for the RoPE
         self.d_k = d_k ## dimension of query and key vectors
         self.max_seq_len = max_seq_len ## Maximum sequence length that will be inputted
         self.device = device ## Device to store the buffer on
 
         dim_index = torch.arange(self.d_k // 2, device=self.device, dtype=torch.float32)
         position_index = torch.arange(self.max_seq_len, device=self.device, dtype=torch.float32)
-        theta_inv_index = self.theta**(-2*dim_index/d_k)
+        theta_inv_index = self.rope_theta**(-2*dim_index/d_k)
         theta_ik = einsum(
             position_index, theta_inv_index,
             "s, d -> s d"
@@ -163,14 +163,14 @@ def scaled_dot_product_attention(
 
 class MultiheadSelfAttention(nn.Module):
     def __init__(self, d_model: int, num_heads: int, 
-                theta: float|None=None, max_seq_len: int|None=None,
+                rope_theta: float|None=None, max_seq_len: int|None=None,
                 device: torch.device | None = None,dtype: torch.dtype | None = None,):
         super().__init__()
         ## mplement causal multi-head self-attention
         self.d_model = d_model ## final dimension of the input
         self.num_heads = num_heads ## number of heads
         self.device = device ## Device to store the parameters on
-        self.theta = theta
+        self.rope_theta = rope_theta
         self.max_seq_len = max_seq_len
         
         assert d_model%num_heads == 0, "d_model/num_heads need to be int"
@@ -184,8 +184,8 @@ class MultiheadSelfAttention(nn.Module):
         
         
         self.rope = None
-        if (theta is not None) and (max_seq_len is not None):
-            self.rope = RotaryPositionalEmbedding(theta, self.d_k, max_seq_len,device,dtype)
+        if (rope_theta is not None) and (max_seq_len is not None):
+            self.rope = RotaryPositionalEmbedding(rope_theta, self.d_k, max_seq_len,device,dtype)
     
     def forward(self, in_features: torch.Tensor, token_positions: torch.Tensor|None=None) -> torch.Tensor:
         seq_len = in_features.shape[-2]
@@ -224,13 +224,13 @@ class MultiheadSelfAttention(nn.Module):
     
 class TransformerBlock(nn.Module):
     def __init__(self, d_model: int, num_heads: int, d_ff: int, 
-                theta: float|None=None, max_seq_len: int|None=None,
+                rope_theta: float|None=None, max_seq_len: int|None=None,
                 device: torch.device | None = None, dtype: torch.dtype | None = None):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_ff = d_ff
-        self.theta = theta
+        self.rope_theta = rope_theta
         self.max_seq_len = max_seq_len
         self.device = device
         self.dtype = dtype
@@ -240,7 +240,7 @@ class TransformerBlock(nn.Module):
         self.mha = MultiheadSelfAttention(
             d_model, 
             num_heads, 
-            theta=theta,
+            rope_theta=rope_theta,
             max_seq_len=max_seq_len, 
             device = device, 
             dtype = dtype
@@ -251,3 +251,44 @@ class TransformerBlock(nn.Module):
         x += self.mha(self.rms_norm1(x))
         x += self.ffn(self.rms_norm2(x))
         return x
+    
+class TransformerLM(nn.Module):
+    def __init__(self, vocab_size: int, context_length: int, num_layers: int, 
+        d_model: int, num_heads: int, rope_theta: float, d_ff:int,
+        device: torch.device | None = None, dtype: torch.dtype | None = None):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.context_length = context_length
+        self.num_layers = num_layers
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.rope_theta = rope_theta
+        self.device = device
+        self.dtype = dtype
+        
+        
+        self.embedding = Embedding(
+            num_embeddings = vocab_size,
+            embedding_dim = d_model,
+            device=device, dtype=dtype
+        )
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(d_model, num_heads, d_ff, rope_theta, context_length, device, dtype)
+            for _ in range(num_layers)
+        ])
+        self.rms_norm = RMSNorm(d_model,
+            device=device, dtype=dtype)
+        self.linear = Linear(
+            in_features=d_model,
+            out_features=vocab_size,
+            device=device, dtype=dtype
+        )
+        
+    def forward(self, in_indices: torch.Tensor) -> torch.Tensor:
+        x = self.embedding(in_indices)
+        for block in self.transformer_blocks:
+            x = block(x)
+        x = self.rms_norm(x)
+        x = self.linear(x)
+        return x
+        
