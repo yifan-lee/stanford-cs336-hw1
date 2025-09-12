@@ -80,25 +80,16 @@ class SwiGLU(nn.Module):
         else:
             self.d_ff = d_ff
         
-        self.w1_weight = nn.Parameter(torch.randn(self.d_ff, self.d_model, device=self.device, dtype=self.dtype))
-        self.w2_weight = nn.Parameter(torch.randn(self.d_model, self.d_ff, device=self.device, dtype=self.dtype))
-        self.w3_weight = nn.Parameter(torch.randn(self.d_ff, self.d_model, device=self.device, dtype=self.dtype))
+        self.w1_weight = Linear(self.d_model,self.d_ff, device=self.device, dtype=self.dtype)
+        self.w2_weight = Linear(self.d_ff, self.d_model, device=self.device, dtype=self.dtype)
+        self.w3_weight = Linear(self.d_model,self.d_ff, device=self.device, dtype=self.dtype)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        w1x = einsum(
-            self.w1_weight, x,
-            "d_ff d_model, ... d_model -> ... d_ff"
-        )
-        w3x = einsum(
-            self.w3_weight, x,
-            "d_ff d_model, ... d_model -> ... d_ff"
-        )
+        w1x = self.w1_weight(x)
+        w3x = self.w3_weight(x)
         SiLUw1x = w1x*torch.sigmoid(w1x)
         part2 = SiLUw1x * w3x
-        result = einsum(
-            self.w2_weight, part2,
-            "d_model d_ff, ... d_ff -> ... d_model"
-        )
+        result = self.w2_weight(part2)
         return result
     
 
@@ -173,7 +164,7 @@ def scaled_dot_product_attention(
 class MultiheadSelfAttention(nn.Module):
     def __init__(self, d_model: int, num_heads: int, 
                 theta: float|None=None, max_seq_len: int|None=None,
-                device: torch.device | None = None):
+                device: torch.device | None = None,dtype: torch.dtype | None = None,):
         super().__init__()
         ## mplement causal multi-head self-attention
         self.d_model = d_model ## final dimension of the input
@@ -186,42 +177,39 @@ class MultiheadSelfAttention(nn.Module):
         self.d_k = d_model//num_heads
         self.d_v = d_model//num_heads
         
-        self.q_proj_weight = nn.Parameter(torch.randn(self.d_k * num_heads, d_model))
-        self.k_proj_weight = nn.Parameter(torch.randn(self.d_k * num_heads, d_model))
-        self.v_proj_weight = nn.Parameter(torch.randn(self.d_v * num_heads, d_model))
-        self.o_proj_weight = nn.Parameter(torch.randn(d_model, self.d_v * num_heads))
+        self.W_q = Linear(d_model,self.d_k * num_heads,device,dtype)
+        self.W_k = Linear(d_model,self.d_k * num_heads,device,dtype)
+        self.W_v = Linear(d_model,self.d_v * num_heads,device,dtype)
+        self.W_o = Linear(self.d_k * num_heads,d_model,device,dtype)
+        
         
         self.rope = None
         if (theta is not None) and (max_seq_len is not None):
-            self.rope = RotaryPositionalEmbedding(theta, self.d_k, max_seq_len)
+            self.rope = RotaryPositionalEmbedding(theta, self.d_k, max_seq_len,device,dtype)
     
     def forward(self, in_features: torch.Tensor, token_positions: torch.Tensor|None=None) -> torch.Tensor:
         seq_len = in_features.shape[-2]
         mask = torch.tril(torch.ones(seq_len,seq_len,dtype=torch.bool))
-        Q = einsum(
-            self.q_proj_weight, in_features,
-            "nd_k d_in, ... d_in -> ... nd_k"
-        )
+        Q = self.W_q(in_features)
         Q_head = rearrange(
             Q, "... seq_len (n d_k) -> ... n seq_len d_k", n = self.num_heads
         )
-        K = einsum(
-            self.k_proj_weight, in_features,
-            "nd_k d_in, ... d_in -> ... nd_k"
-        )
+        K = self.W_k(in_features)
         K_head = rearrange(
             K, "... seq_len (n d_k) -> ... n seq_len d_k", n = self.num_heads
         )
-        if (self.rope is not None) and (token_positions is not None):
-            position = repeat(
-                token_positions, " ... seq_len -> ... n seq_len", n = self.num_heads
-            )
+        if self.rope is not None:
+            if token_positions is not None:
+                position = repeat(
+                    token_positions, " ... seq_len -> ... n seq_len", n = self.num_heads
+                )
+            else:
+                position = torch.arange(seq_len)
+                position_expend_shape = (Q_head.shape[:-1])
+                position = position.expand(position_expend_shape)
             Q_head = self.rope(Q_head, position)
             K_head = self.rope(K_head, position)
-        V = einsum(
-            self.v_proj_weight, in_features,
-            "nd_v d_in, ... d_in -> ... nd_v"
-        )
+        V = self.W_v(in_features)
         V_head = rearrange(
             V, "... seq_len (n d_v) -> ... n seq_len d_v", n = self.num_heads
         )
@@ -231,8 +219,35 @@ class MultiheadSelfAttention(nn.Module):
         head = rearrange(
             head, "... n seq_len d_v -> ... seq_len (n d_v)"
         )
-        attention = einsum(
-            head, self.o_proj_weight,
-            "... seq_len d_v,  d_in d_v -> ... seq_len d_in"
-        )
+        attention = self.W_o(head)
         return attention
+    
+class TransformerBlock(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, 
+                theta: float|None=None, max_seq_len: int|None=None,
+                device: torch.device | None = None, dtype: torch.dtype | None = None):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.theta = theta
+        self.max_seq_len = max_seq_len
+        self.device = device
+        self.dtype = dtype
+        
+        self.rms_norm1 = RMSNorm(d_model, device = device, dtype = dtype)
+        self.rms_norm2 = RMSNorm(d_model, device = device, dtype = dtype)
+        self.mha = MultiheadSelfAttention(
+            d_model, 
+            num_heads, 
+            theta=theta,
+            max_seq_len=max_seq_len, 
+            device = device, 
+            dtype = dtype
+        )
+        self.ffn = SwiGLU(d_model=d_model, d_ff=d_ff ,device = device, dtype = dtype)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x += self.mha(self.rms_norm1(x))
+        x += self.ffn(self.rms_norm2(x))
+        return x

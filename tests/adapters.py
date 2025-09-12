@@ -10,7 +10,7 @@ import torch
 from torch import Tensor
 
 from support.bpe_tokenize import train_bpe
-from support.transformer import Linear, Embedding, RMSNorm, SwiGLU, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention, MultiheadSelfAttention
+from support.transformer import Linear, Embedding, RMSNorm, SwiGLU, RotaryPositionalEmbedding, softmax, scaled_dot_product_attention, MultiheadSelfAttention,TransformerBlock
 
 
 
@@ -86,12 +86,9 @@ def run_swiglu(
     """
     
     model = SwiGLU(d_model, d_ff)
-    state_dict = {
-        "w1_weight": w1_weight,
-        "w2_weight": w2_weight,
-        "w3_weight": w3_weight,
-    }
-    model.load_state_dict(state_dict)
+    model.w1_weight.load_state_dict({"weights":w1_weight})
+    model.w2_weight.load_state_dict({"weights":w2_weight})
+    model.w3_weight.load_state_dict({"weights":w3_weight})
 
     return model(in_features)
 
@@ -150,13 +147,10 @@ def run_multihead_self_attention(
         implementation with the given QKV projection weights and input features.
     """
     model = MultiheadSelfAttention(d_model,num_heads)
-    state_dict = {
-        "q_proj_weight": q_proj_weight,
-        "k_proj_weight": k_proj_weight,
-        "v_proj_weight": v_proj_weight,
-        "o_proj_weight": o_proj_weight,
-    }
-    model.load_state_dict(state_dict)
+    model.W_q.load_state_dict({'weights': q_proj_weight})
+    model.W_k.load_state_dict({'weights': k_proj_weight})
+    model.W_v.load_state_dict({'weights': v_proj_weight})
+    model.W_o.load_state_dict({'weights': o_proj_weight})
     return model(in_features)
 
 
@@ -197,15 +191,13 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    model = MultiheadSelfAttention(d_model,num_heads, theta,max_seq_len)
-    state_dict = {
-        "q_proj_weight": q_proj_weight,
-        "k_proj_weight": k_proj_weight,
-        "v_proj_weight": v_proj_weight,
-        "o_proj_weight": o_proj_weight,
-    }
-    model.load_state_dict(state_dict)
-    return model(in_features,token_positions)
+    model = MultiheadSelfAttention(d_model,num_heads, theta, max_seq_len)
+    model.W_q.load_state_dict({'weights': q_proj_weight})
+    model.W_k.load_state_dict({'weights': k_proj_weight})
+    model.W_v.load_state_dict({'weights': v_proj_weight})
+    model.W_o.load_state_dict({'weights': o_proj_weight})
+    # return model(in_features,token_positions)
+    return model(in_features)
 
 def run_rope(
     d_k: int,
@@ -301,7 +293,18 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    model = TransformerBlock(d_model,num_heads,d_ff,theta,max_seq_len)
+    model.mha.W_q.load_state_dict({'weights': weights['attn.q_proj.weight']})
+    model.mha.W_k.load_state_dict({'weights': weights['attn.k_proj.weight']})
+    model.mha.W_v.load_state_dict({'weights': weights['attn.v_proj.weight']})
+    model.mha.W_o.load_state_dict({'weights': weights['attn.output_proj.weight']})
+    model.ffn.w1_weight.load_state_dict({'weights': weights['ffn.w1.weight']})
+    model.ffn.w2_weight.load_state_dict({'weights': weights['ffn.w2.weight']})
+    model.ffn.w3_weight.load_state_dict({'weights': weights['ffn.w3.weight']})
+    model.rms_norm1.load_state_dict({'weights': weights['ln1.weight']})
+    model.rms_norm2.load_state_dict({'weights': weights['ln2.weight']})
+    output = model(in_features)
+    return output
 
 
 def run_transformer_lm(
