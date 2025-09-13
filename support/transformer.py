@@ -292,3 +292,15 @@ class TransformerLM(nn.Module):
         x = self.linear(x)
         return x
         
+        
+def cross_entropy(inputs: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    inputs_max = torch.max(inputs, dim=-1, keepdim=True).values
+    inputs_subtract_max = inputs - inputs_max
+    inputs_exp = inputs_subtract_max.exp()
+    inputs_exp_sum = torch.sum(inputs_exp, dim=-1, keepdim=True)
+
+    target_expanded = rearrange(target, 'n -> n 1')
+    target_logits = torch.gather(inputs_subtract_max, 1, target_expanded)
+    
+    loss = - (target_logits - torch.log(inputs_exp_sum))
+    return loss.mean()
