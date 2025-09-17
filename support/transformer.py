@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 from einops import rearrange, einsum, reduce, repeat
-
+from collections.abc import Callable, Iterable
+from typing import Optional
 
 class Linear(nn.Module):
     def __init__(self, in_features: int, out_features: int, device: torch.device | None = None, dtype: torch.dtype | None = None):
@@ -304,3 +305,51 @@ def cross_entropy(inputs: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     
     loss = - (target_logits - torch.log(inputs_exp_sum))
     return loss.mean()
+
+
+
+
+class AdamW(torch.optim.Optimizer):
+    def __init__(
+        self, params, 
+        lr=1e-3, 
+        betas = (0.9,0.999),
+        eps = 1e-8,
+        weight_decay = 0.1
+    ):
+        if lr < 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        defaults = {
+            'lr': lr,
+            'betas': betas,
+            'eps': eps,
+            'weight_decay': weight_decay,
+        }
+        super().__init__(params, defaults)
+        
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr = group["lr"]
+            betas = group["betas"]
+            beta1 = betas[0]
+            beta2 = betas[1]
+            eps = group["eps"]
+            weight_decay = group["weight_decay"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p] 
+                m = state.get("m", 0) 
+                v = state.get("v", 0) 
+                t = state.get("t", 1) 
+                g = p.grad.data 
+                m = beta1*m+(1-beta1)*g
+                v = beta2*v+(1-beta2)*g**2
+                state["m"] = m
+                state["v"] = v
+                alphat = lr*(1-beta2**t)**0.5/(1-beta1**t)
+                p.data -= alphat*m/(v**0.5+eps)
+                p.data -= lr*weight_decay*p.data
+                state["t"] = t + 1 # Increment iteration number.
+        return loss
