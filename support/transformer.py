@@ -3,6 +3,7 @@ import torch.nn as nn
 from einops import rearrange, einsum, reduce, repeat
 from collections.abc import Callable, Iterable
 from typing import Optional
+import math
 
 class Linear(nn.Module):
     def __init__(self, in_features: int, out_features: int, device: torch.device | None = None, dtype: torch.dtype | None = None):
@@ -352,4 +353,39 @@ class AdamW(torch.optim.Optimizer):
                 p.data -= alphat*m/(v**0.5+eps)
                 p.data -= lr*weight_decay*p.data
                 state["t"] = t + 1 # Increment iteration number.
-        return loss
+        return 
+    
+    
+    
+def learning_rate_schedule(
+    it: int,
+    max_learning_rate: float,
+    min_learning_rate: float,
+    warmup_iters: int,
+    cosine_cycle_iters: int
+) -> float:
+    if it < warmup_iters:
+        lr = it/warmup_iters*max_learning_rate
+    elif (warmup_iters <= it) and (it <= cosine_cycle_iters):
+        cos_value = (it-warmup_iters)/(cosine_cycle_iters-warmup_iters)
+        lr = min_learning_rate+(1+math.cos(cos_value*math.pi))*(max_learning_rate-min_learning_rate)/2
+    else:
+        lr = min_learning_rate
+    return lr
+
+
+def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float):
+    eps = 1e-6
+    grads = []
+    for p in parameters:
+        if p.grad is not None:
+            grads.append(p.grad)
+
+    all_grads = torch.cat(grads)
+    total_norm = torch.norm(all_grads, p=2)
+    if total_norm >= max_l2_norm:
+        clip_coef = max_l2_norm / (total_norm + eps)
+        for p in parameters:
+            if p.grad is not None:
+                p.grad = p.grad*clip_coef
+        
